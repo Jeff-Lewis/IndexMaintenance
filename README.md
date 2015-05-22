@@ -1,5 +1,5 @@
-IndexMaintenance
-================
+SQL Server Maintenance Solution
+================================================================
 
 Use Ola Hallengren's maintenance scripts as a basis and customize
 
