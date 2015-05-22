@@ -1,4 +1,4 @@
-﻿SET ANSI_NULLS ON
+SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
 GO
@@ -798,12 +798,6 @@ BEGIN
       SET @CurrentDifferentialBaseLSN = NULL
     END
 
-    SELECT @CurrentDifferentialBaseIsSnapshot = is_snapshot
-    FROM msdb.dbo.backupset
-    WHERE database_name = @CurrentDatabaseName
-    AND [type] = 'D'
-    AND checkpoint_lsn = @CurrentDifferentialBaseLSN
-
     IF DATABASEPROPERTYEX(@CurrentDatabaseName,'Status') = 'ONLINE'
     BEGIN
       SELECT @CurrentLogLSN = last_log_backup_lsn
@@ -825,7 +819,7 @@ BEGIN
       END
     END
 
-    IF @CurrentBackupType = 'LOG'
+    IF @CurrentBackupType = 'LOG' AND (@CleanupTime IS NOT NULL OR @MirrorCleanupTime IS NOT NULL)
     BEGIN
       SELECT @CurrentLatestBackup = MAX(backup_finish_date)
       FROM msdb.dbo.backupset
@@ -833,6 +827,15 @@ BEGIN
       OR database_backup_lsn < @CurrentDifferentialBaseLSN)
       AND is_damaged = 0
       AND database_name = @CurrentDatabaseName
+    END
+
+    IF @CurrentBackupType = 'DIFF'
+    BEGIN
+      SELECT @CurrentDifferentialBaseIsSnapshot = is_snapshot
+      FROM msdb.dbo.backupset
+      WHERE database_name = @CurrentDatabaseName
+      AND [type] = 'D'
+      AND checkpoint_lsn = @CurrentDifferentialBaseLSN
     END
 
     IF @Version >= 11 AND @Cluster IS NOT NULL
@@ -882,7 +885,7 @@ BEGIN
     IF @CurrentDatabaseMirroringRole IS NOT NULL SET @DatabaseMessage = @DatabaseMessage + 'Database mirroring role: ' + @CurrentDatabaseMirroringRole + CHAR(13) + CHAR(10)
     IF @CurrentLogShippingRole IS NOT NULL SET @DatabaseMessage = @DatabaseMessage + 'Log shipping role: ' + @CurrentLogShippingRole + CHAR(13) + CHAR(10)
     SET @DatabaseMessage = @DatabaseMessage + 'Differential base LSN: ' + ISNULL(CAST(@CurrentDifferentialBaseLSN AS nvarchar),'N/A') + CHAR(13) + CHAR(10)
-    SET @DatabaseMessage = @DatabaseMessage + 'Differential base is snapshot: ' + CASE WHEN @CurrentDifferentialBaseIsSnapshot = 1 THEN 'Yes' WHEN @CurrentDifferentialBaseIsSnapshot = 0 THEN 'No' ELSE 'N/A' END + CHAR(13) + CHAR(10)
+    IF @CurrentBackupType = 'DIFF' SET @DatabaseMessage = @DatabaseMessage + 'Differential base is snapshot: ' + CASE WHEN @CurrentDifferentialBaseIsSnapshot = 1 THEN 'Yes' WHEN @CurrentDifferentialBaseIsSnapshot = 0 THEN 'No' ELSE 'N/A' END + CHAR(13) + CHAR(10)
     SET @DatabaseMessage = @DatabaseMessage + 'Last log backup LSN: ' + ISNULL(CAST(@CurrentLogLSN AS nvarchar),'N/A') + CHAR(13) + CHAR(10)
     SET @DatabaseMessage = REPLACE(@DatabaseMessage,'%','%%') + ' '
     RAISERROR(@DatabaseMessage,10,1) WITH NOWAIT

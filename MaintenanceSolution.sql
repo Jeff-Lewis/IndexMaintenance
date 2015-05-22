@@ -1,4 +1,4 @@
-﻿/*
+/*
 
 SQL Server Maintenance Solution - SQL Server 2005, SQL Server 2008, SQL Server 2008 R2, SQL Server 2012, and SQL Server 2014
 
@@ -10,7 +10,7 @@ The solution is free: https://ola.hallengren.com/license.html
 
 You can contact me by e-mail at ola@hallengren.com.
 
-Last updated 26 December, 2014.
+Last updated 25 January, 2015.
 
 Ola Hallengren
 https://ola.hallengren.com
@@ -1107,12 +1107,6 @@ BEGIN
       SET @CurrentDifferentialBaseLSN = NULL
     END
 
-    SELECT @CurrentDifferentialBaseIsSnapshot = is_snapshot
-    FROM msdb.dbo.backupset
-    WHERE database_name = @CurrentDatabaseName
-    AND [type] = 'D'
-    AND checkpoint_lsn = @CurrentDifferentialBaseLSN
-
     IF DATABASEPROPERTYEX(@CurrentDatabaseName,'Status') = 'ONLINE'
     BEGIN
       SELECT @CurrentLogLSN = last_log_backup_lsn
@@ -1134,7 +1128,7 @@ BEGIN
       END
     END
 
-    IF @CurrentBackupType = 'LOG'
+    IF @CurrentBackupType = 'LOG' AND (@CleanupTime IS NOT NULL OR @MirrorCleanupTime IS NOT NULL)
     BEGIN
       SELECT @CurrentLatestBackup = MAX(backup_finish_date)
       FROM msdb.dbo.backupset
@@ -1142,6 +1136,15 @@ BEGIN
       OR database_backup_lsn < @CurrentDifferentialBaseLSN)
       AND is_damaged = 0
       AND database_name = @CurrentDatabaseName
+    END
+
+    IF @CurrentBackupType = 'DIFF'
+    BEGIN
+      SELECT @CurrentDifferentialBaseIsSnapshot = is_snapshot
+      FROM msdb.dbo.backupset
+      WHERE database_name = @CurrentDatabaseName
+      AND [type] = 'D'
+      AND checkpoint_lsn = @CurrentDifferentialBaseLSN
     END
 
     IF @Version >= 11 AND @Cluster IS NOT NULL
@@ -1191,7 +1194,7 @@ BEGIN
     IF @CurrentDatabaseMirroringRole IS NOT NULL SET @DatabaseMessage = @DatabaseMessage + 'Database mirroring role: ' + @CurrentDatabaseMirroringRole + CHAR(13) + CHAR(10)
     IF @CurrentLogShippingRole IS NOT NULL SET @DatabaseMessage = @DatabaseMessage + 'Log shipping role: ' + @CurrentLogShippingRole + CHAR(13) + CHAR(10)
     SET @DatabaseMessage = @DatabaseMessage + 'Differential base LSN: ' + ISNULL(CAST(@CurrentDifferentialBaseLSN AS nvarchar),'N/A') + CHAR(13) + CHAR(10)
-    SET @DatabaseMessage = @DatabaseMessage + 'Differential base is snapshot: ' + CASE WHEN @CurrentDifferentialBaseIsSnapshot = 1 THEN 'Yes' WHEN @CurrentDifferentialBaseIsSnapshot = 0 THEN 'No' ELSE 'N/A' END + CHAR(13) + CHAR(10)
+    IF @CurrentBackupType = 'DIFF' SET @DatabaseMessage = @DatabaseMessage + 'Differential base is snapshot: ' + CASE WHEN @CurrentDifferentialBaseIsSnapshot = 1 THEN 'Yes' WHEN @CurrentDifferentialBaseIsSnapshot = 0 THEN 'No' ELSE 'N/A' END + CHAR(13) + CHAR(10)
     SET @DatabaseMessage = @DatabaseMessage + 'Last log backup LSN: ' + ISNULL(CAST(@CurrentLogLSN AS nvarchar),'N/A') + CHAR(13) + CHAR(10)
     SET @DatabaseMessage = REPLACE(@DatabaseMessage,'%','%%') + ' '
     RAISERROR(@DatabaseMessage,10,1) WITH NOWAIT
@@ -2103,9 +2106,9 @@ BEGIN
     SET @Error = @@ERROR
   END
 
-  IF SERVERPROPERTY('EngineEdition') = 5
+  IF SERVERPROPERTY('EngineEdition') = 5 AND @Version < 12
   BEGIN
-    SET @ErrorMessage = 'The stored procedure DatabaseIntegrityCheck is not supported on Azure SQL Database.' + CHAR(13) + CHAR(10) + ' '
+    SET @ErrorMessage = 'The stored procedure DatabaseIntegrityCheck is not supported on this version of Azure SQL Database.' + CHAR(13) + CHAR(10) + ' '
     RAISERROR(@ErrorMessage,16,1) WITH NOWAIT
     SET @Error = @@ERROR
   END
@@ -2391,7 +2394,7 @@ BEGIN
   --// Check Availability Group cluster name                                                      //--
   ----------------------------------------------------------------------------------------------------
 
-  IF @Version >= 11
+  IF @Version >= 11 AND SERVERPROPERTY('EngineEdition') <> 5
   BEGIN
     SELECT @Cluster = cluster_name
     FROM sys.dm_hadr_cluster
@@ -2413,7 +2416,7 @@ BEGIN
 
     SET @CurrentDatabaseID = DB_ID(@CurrentDatabaseName)
 
-    IF DATABASEPROPERTYEX(@CurrentDatabaseName,'Status') = 'ONLINE'
+    IF DATABASEPROPERTYEX(@CurrentDatabaseName,'Status') = 'ONLINE' AND SERVERPROPERTY('EngineEdition') <> 5
     BEGIN
       IF EXISTS (SELECT * FROM sys.database_recovery_status WHERE database_id = @CurrentDatabaseID AND database_guid IS NOT NULL)
       BEGIN
@@ -2436,9 +2439,12 @@ BEGIN
       WHERE databases.name = @CurrentDatabaseName
     END
 
-    SELECT @CurrentDatabaseMirroringRole = UPPER(mirroring_role_desc)
-    FROM sys.database_mirroring
-    WHERE database_id = @CurrentDatabaseID
+    IF SERVERPROPERTY('EngineEdition') <> 5
+    BEGIN
+      SELECT @CurrentDatabaseMirroringRole = UPPER(mirroring_role_desc)
+      FROM sys.database_mirroring
+      WHERE database_id = @CurrentDatabaseID
+    END
 
     -- Set database message
     SET @DatabaseMessage = 'Date and time: ' + CONVERT(nvarchar,GETDATE(),120) + CHAR(13) + CHAR(10)
@@ -2668,7 +2674,7 @@ BEGIN
 
             SET @CurrentCommand08 = ''
             IF @LockTimeout IS NOT NULL SET @CurrentCommand08 = 'SET LOCK_TIMEOUT ' + CAST(@LockTimeout * 1000 AS nvarchar) + '; '
-            SET @CurrentCommand08 = @CurrentCommand08 + 'DBCC CHECKTABLE (''' + QUOTENAME(@CurrentDatabaseName) + '.' + QUOTENAME(@CurrentSchemaName) + '.' + QUOTENAME(@CurrentObjectName) + ''''
+            SET @CurrentCommand08 = @CurrentCommand08 + 'USE ' + QUOTENAME(@CurrentDatabaseName) + '; DBCC CHECKTABLE (''' + QUOTENAME(@CurrentSchemaName) + '.' + QUOTENAME(@CurrentObjectName) + ''''
             IF @NoIndex = 'Y' SET @CurrentCommand08 = @CurrentCommand08 + ', NOINDEX'
             SET @CurrentCommand08 = @CurrentCommand08 + ') WITH NO_INFOMSGS, ALL_ERRORMSGS'
             IF @PhysicalOnly = 'N' SET @CurrentCommand08 = @CurrentCommand08 + ', DATA_PURITY'
